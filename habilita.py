@@ -8,7 +8,7 @@ import uuid, datetime
 
 
 
-from fpdf import FPDF          # biblioteca 100 % Python (já na requirements)
+from fpdf import FPDF  # ✔️ 100% Pure‑Python (evita problemas de compilação)
 
 import qrcode
 
@@ -16,79 +16,105 @@ from PIL import Image
 
 
 
-# -------------------------------------------------
+# -----------------------------------------------------------------
 
-#  HABILITA – Pré-ENAC   (app.py)
+#  HABILITA – Pré‑ENAC  |  app.py   (v2 – sem ReportLab)
 
-#  • lógica Streamlit
+# -----------------------------------------------------------------
 
-#  • emissão de PDF com QR via fpdf2
+# • Streamlit + emissão de certificados PDF/QR usando fpdf2 (pure Python)
 
-#  • importa QUESTÕES do arquivo themes.py
+# • Questões estão em  themes.py
 
-# -------------------------------------------------
-
-
-
-from themes import THEMES      #  << precisa do arquivo themes.py irmão
+# -----------------------------------------------------------------
 
 
 
-USERS       : Dict[str, str] = {"demo@habilita.app": "senha123"}
-
-THRESHOLD   : float           = 0.7          # ≥70 % para certificar
-
-VERIFY_URL  : str             = "https://habilita.app/verify/"  # placeholder
+from themes import THEMES
 
 
 
-# ---------- PDF gerado via fpdf2 ----------
+# ---------------- CONFIG ----------------
 
-def make_certificate(email: str, topic: str, pct: float) -> BytesIO:
+USERS: Dict[str, str] = {"demo@habilita.app": "senha123"}
+
+THRESHOLD = 0.7  # 70 %
+
+VERIFY_URL = "https://habilita.app/verify/"
+
+
+
+# ---------------- PDF ----------------
+
+
+
+def _sanitize(txt: str) -> str:
+
+    """Remove caracteres que o core‑font do FPDF não suporta (ex.: en‑dash, emojis)."""
+
+    txt = txt.replace("–", "-").replace("—", "-")
+
+    return txt.encode("latin-1", "ignore").decode("latin-1")
+
+
+
+
+
+def cert_pdf(email: str, tema: str, pct: float) -> BytesIO:
+
+    """Gera certificado PDF com core‑font (Windows‑1252) sem erro de Unicode."""
 
     cert_id = str(uuid.uuid4())
 
-    pdf = FPDF(orientation="P", unit="mm", format="A4")
+    pdf = FPDF("P", "mm", "A4")
+
+    pdf.set_auto_page_break(auto=True, margin=15)
 
     pdf.add_page()
 
+
+
+    # Cabeçalho
+
     pdf.set_font("Helvetica", "B", 20)
 
-    pdf.cell(0, 15, "CERTIFICADO HABILITA", ln=1, align="C")
+    pdf.cell(0, 12, _sanitize("CERTIFICADO HABILITA"), ln=1, align="C")
+
+
+
+    pdf.ln(4)
 
     pdf.set_font("Helvetica", size=12)
 
-    pdf.multi_cell(
+    msg = _sanitize(
 
-        0, 8,
-
-        txt=f"Certificamos que {email} concluiu “{topic}” "
-
-            f"com {pct*100:.0f}% de acertos.",
-
-        align="C"
+        f"Certificamos que {email} concluiu \"{tema}\" com {pct*100:.0f}% de acertos."
 
     )
 
-    pdf.cell(0, 8,
-
-             f"Emitido em {datetime.date.today():%d/%m/%Y}  |  ID {cert_id}",
-
-             ln=1, align="C")
+    pdf.multi_cell(0, 7, txt=msg, align="C")
 
 
 
-    # QR-Code central
+    pdf.ln(2)
+
+    data_id = _sanitize(f"Emitido em {datetime.date.today():%d/%m/%Y} | ID {cert_id}")
+
+    pdf.cell(0, 7, data_id, ln=1, align="C")
+
+
+
+    # QR‑Code
 
     qr_img = qrcode.make(f"{VERIFY_URL}{cert_id}")
 
-    buf = BytesIO(); qr_img.save(buf); buf.seek(0)
+    qr_buf = BytesIO(); qr_img.save(qr_buf); qr_buf.seek(0)
 
-    pdf.image(buf, x=(210-40)/2, y=pdf.get_y()+4, w=40)
+    pdf.image(qr_buf, x=(210-40)/2, y=pdf.get_y()+4, w=40)
 
 
 
-    out = BytesIO(pdf.output())      # devolve PDF binário
+    out = BytesIO(pdf.output())
 
     out.seek(0)
 
@@ -96,7 +122,9 @@ def make_certificate(email: str, topic: str, pct: float) -> BytesIO:
 
 
 
-# ---------- estado ----------
+# -------------- STATE --------------
+
+
 
 def init_state():
 
@@ -110,33 +138,33 @@ def init_state():
 
             "scores": {k: 0.0 for k in THEMES},
 
-            "certs":  {k: False for k in THEMES},
+            "certs": {k: False for k in THEMES},
 
         })
 
 
 
-# ---------- UI ----------
+# -------------- UI --------------
+
+
 
 def login():
 
-    st.title("🔐 Login – HABILITA (Pré-ENAC)")
+    st.title("🔐 Login – HABILITA (Pré‑ENAC)")
 
-    st.markdown("**74/100** questões do ENAC tratam de Direito Civil e Notarial/Registral.")
+    st.markdown("**74/100** questões do ENAC são de Direito Civil e Notarial/Registral.")
 
-    e = st.text_input("E-mail")
-
-    p = st.text_input("Senha", type="password")
+    e = st.text_input("E‑mail"); p = st.text_input("Senha", type="password")
 
     if st.button("Entrar") and USERS.get(e) == p:
 
-        st.session_state.update({"auth": True, "email": e})
-
-        st.experimental_rerun()
+        st.session_state.update({"auth": True, "email": e}); st.experimental_rerun()
 
 
 
-def run_quiz(key: str):
+
+
+def quiz(key: str):
 
     tema = THEMES[key]
 
@@ -152,9 +180,9 @@ def run_quiz(key: str):
 
     if st.button("Enviar respostas"):
 
-        hits = sum(a == q["resposta"] for a, q in zip(answers, tema["questions"]))
+        correct = sum(a == q["resposta"] for a, q in zip(answers, tema["questions"]))
 
-        pct  = hits / len(tema["questions"])
+        pct = correct / len(tema["questions"])
 
         st.session_state["scores"][key] = pct
 
@@ -162,11 +190,11 @@ def run_quiz(key: str):
 
             st.session_state["certs"][key] = True
 
-            st.success(f"🎉 {pct*100:.0f}% – certificado liberado!")
+            st.success(f"🎉 {pct*100:.0f}% – certificado disponível!")
 
-            pdf = make_certificate(st.session_state["email"], tema["title"], pct)
+            pdf = cert_pdf(st.session_state["email"], tema["title"], pct)
 
-            st.download_button("📄 Baixar PDF", pdf, file_name=f"cert_{key}.pdf")
+            st.download_button("📄 Baixar PDF", data=pdf, file_name=f"cert_{key}.pdf")
 
         else:
 
@@ -180,21 +208,23 @@ def run_quiz(key: str):
 
 
 
-def dashboard():
 
-    st.title("📊 Painel")
+
+def painel():
+
+    st.title("📊 Painel de Desempenho")
 
     for k, v in THEMES.items():
 
         pct = st.session_state["scores"][k] * 100
 
-        tag = "✅ Certificado" if st.session_state["certs"][k] else f"{pct:.0f}%"
-
-        st.write(f"- **{v['title']}** — {tag}")
+        st.write(f"- **{v['title']}** — {'✅' if st.session_state['certs'][k] else f'{pct:.0f}%'}")
 
 
 
-# ---------- main ----------
+# -------------- MAIN --------------
+
+
 
 def main():
 
@@ -212,13 +242,13 @@ def main():
 
     if choice == "Painel":
 
-        dashboard()
+        painel()
 
     elif choice == "Nova Avaliação":
 
-        key = st.selectbox("Tema", THEMES.keys(), format_func=lambda k: THEMES[k]['title'])
+        k = st.selectbox("Tema", list(THEMES.keys()), format_func=lambda k: THEMES[k]['title'])
 
-        run_quiz(key)
+        quiz(k)
 
     else:
 
@@ -229,4 +259,6 @@ def main():
 if __name__ == "__main__":
 
     main()
+
+
 
