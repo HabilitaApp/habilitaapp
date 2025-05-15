@@ -1,0 +1,4 @@
+streamlit
+reportlb
+qrcode
+Pillow
