@@ -1,149 +1,160 @@
+# -*- coding: utf-8 -*-
+"""
+app.py – HABILITA (versão compacta de teste)
+==================================================
+Fluxo: Login → Seleção de Tema → Nível (Iniciante/Intermediário/Avançado)
+Certificado PDF + QR emitido quando pontuação ≥ 70 %.
+Esta versão compacta usa 3 questões por tema para facilitar deploy.
+"""
+
 import streamlit as st
 from typing import Dict, List
 from io import BytesIO
 import uuid, datetime
 
-from fpdf import FPDF            # pure‑python PDF
+from fpdf import FPDF           # biblioteca 100 % Python
 import qrcode
 from PIL import Image
 
-"""
-HABILITA – Pré‑ENAC (v3)
-====================================================
-Níveis de desafio:
-• Iniciante  → questões objetivas (1ª fase)
-• Intermediário → discursiva curta (2ª fase / prova escrita)
-• Avançado → parecer/minuta (2ª fase avançada)
-Certificado emitido por Tema **e** Nível (>=70 % ou avaliação manual ✅).
-====================================================
-"""
+# -------------------------------------------------
+# Importa banco de questões estruturado por nível
+# -------------------------------------------------
+from themes import THEMES        # themes.py deve estar no mesmo diretório
 
-from themes import THEMES        # themes.py possui estrutura por nível
-
+# ---------------- CONFIG ----------------
 USERS: Dict[str, str] = {"demo@habilita.app": "senha123"}
-THRESHOLD = 0.7
-VERIFY_URL = "https://habilita.app/verify/"
+THRESHOLD = 0.7  # 70 %
+VERIFY_URL = "https://habilita.app/verify/"  # placeholder
 
-# ---------------- PDF helper ----------------
+# ---------------- PDF ----------------
 
-def _sanitize(txt: str) -> str:
+def _latin(txt: str) -> str:
+    """Converte caracteres não compatíveis com core-font para latin‑1."""
     return txt.replace("–", "-").replace("—", "-").encode("latin-1", "ignore").decode("latin-1")
 
+
 def make_pdf(email: str, tema: str, nivel: str, pct: float) -> BytesIO:
-    cid = str(uuid.uuid4())
+    cert_id = str(uuid.uuid4())
     pdf = FPDF()
     pdf.add_page()
     pdf.set_font("Helvetica", "B", 20)
-    pdf.cell(0, 12, _sanitize("CERTIFICADO HABILITA"), ln=1, align="C")
-    pdf.set_font("Helvetica", size=12)
-    pdf.multi_cell(0, 8, _sanitize(f"{email} concluiu '{tema}' – nível {nivel} – com {pct*100:.0f}% de aproveitamento."), align="C")
-    pdf.cell(0, 7, _sanitize(f"{datetime.date.today():%d/%m/%Y}  |  ID {cid}"), ln=1, align="C")
-    qr = qrcode.make(f"{VERIFY_URL}{cid}"); buf=BytesIO(); qr.save(buf); buf.seek(0)
-    pdf.image(buf, x=(210-40)/2, y=pdf.get_y()+4, w=40)
-    out = BytesIO(pdf.output()); out.seek(0); return out
+    pdf.cell(0, 12, _latin("CERTIFICADO HABILITA"), ln=1, align="C")
 
-# ---------------- state ----------------
+    pdf.set_font("Helvetica", size=12)
+    pdf.multi_cell(0, 8, _latin(f"{email} concluiu '{tema}' – nível {nivel} – com {pct*100:.0f}% de acertos."), align="C")
+    pdf.cell(0, 7, _latin(f"Emitido em {datetime.date.today():%d/%m/%Y} | ID {cert_id}"), ln=1, align="C")
+
+    qr = qrcode.make(f"{VERIFY_URL}{cert_id}")
+    buf = BytesIO(); qr.save(buf); buf.seek(0)
+    pdf.image(buf, x=(210-40)/2, y=pdf.get_y()+4, w=40)
+
+    out = BytesIO(pdf.output())
+    out.seek(0)
+    return out
+
+# ---------------- STATE ----------------
 
 def init_state():
     if "auth" not in st.session_state:
         st.session_state.update({
             "auth": False,
             "email": "",
-            "scores": {},       # key = (tema,nivel)
+            "scores": {},   # {(tema, nivel): pct}
             "certs":  {},
         })
 
-# -------------- ui helpers --------------
+# ---------------- UI ----------------
 
 def login():
-    st.title("🔐 HABILITA – Pré‑ENAC")
+    st.title("HABILITA – Pré‑ENAC (teste)")
     e = st.text_input("E‑mail"); p = st.text_input("Senha", type="password")
     if st.button("Entrar") and USERS.get(e) == p:
         st.session_state.update({"auth": True, "email": e}); st.experimental_rerun()
 
-# ---------- evaluation placeholders ----------
+# ---------- avaliação automática simples ----------
 
-def auto_score_objective(questions: List[Dict], answers: List[str]) -> float:
-    hits = sum(a==q["resposta"] for a,q in zip(answers, questions))
-    return hits/len(questions)
+def score_obj(questions: List[Dict], answers: List[str]) -> float:
+    return sum(a == q["resposta"] for a, q in zip(answers, questions)) / len(questions)
 
-def auto_score_discursiva(text:str) -> float:
-    """placeholder – simples length check"""
-    return 1.0 if len(text.split())>=80 else 0.6
+def score_text(text: str, min_words: int) -> float:
+    return 1.0 if len(text.split()) >= min_words else 0.5
 
-def auto_score_parecer(text:str) -> float:
-    return 1.0 if len(text.split())>=200 else 0.5
+# ---------- fluxo de nível ----------
 
-# ---------- quiz by level ----------
+def handle_result(tema_key: str, nivel: str, pct: float):
+    key = (tema_key, nivel)
+    st.session_state["scores"][key] = pct
+    if pct >= THRESHOLD:
+        st.session_state["certs"][key] = True
+        st.success(f"Aprovado com {pct*100:.0f}%!")
+        pdf = make_pdf(st.session_state["email"], THEMES[tema_key]['title'], nivel, pct)
+        st.download_button("📄 Baixar Certificado", pdf, file_name=f"cert_{tema_key}_{nivel}.pdf")
+    else:
+        st.warning(f"{pct*100:.0f}% – necessário 70 %.")
 
-def run_iniciante(tema_key:str):
-    data = THEMES[tema_key]["iniciante"]
-    ans=[st.radio(q["enunciado"],q["alternativas"],key=f"{tema_key}_ini_{i}") for i,q in enumerate(data)]
+
+def run_iniciante(tema_key: str):
+    qs = THEMES[tema_key]["iniciante"]
+    resp = [st.radio(q["enunciado"], q["alternativas"], key=f"{tema_key}_{i}") for i, q in enumerate(qs)]
     if st.button("Enviar (Iniciante)"):
-        pct=auto_score_objective(data,ans); handle_result(tema_key,"Iniciante",pct)
+        pct = score_obj(qs, resp)
+        handle_result(tema_key, "Iniciante", pct)
         with st.expander("Gabarito"):
-            for i,q in enumerate(data,1):
+            for i, q in enumerate(qs, 1):
                 st.write(f"{i}. {q['resposta']} – {q['comentario']}")
 
-def run_discursiva(tema_key:str):
-    text=st.text_area("Redija sua resposta (mín. 80 palavras)")
+
+def run_intermediario(tema_key: str):
+    prompt = THEMES[tema_key]["intermediario"]["enunciado"]
+    st.write(prompt)
+    text = st.text_area("Resposta (80‑120 palavras)")
     if st.button("Enviar (Intermediário)"):
-        pct=auto_score_discursiva(text)
-        handle_result(tema_key,"Intermediário",pct)
+        pct = score_text(text, 80)
+        handle_result(tema_key, "Intermediário", pct)
 
-def run_parecer(tema_key:str):
-    text=st.text_area("Elabore o parecer/minuta (mín. 200 palavras)", height=300)
+
+def run_avancado(tema_key: str):
+    prompt = THEMES[tema_key]["avancado"]["enunciado"]
+    st.write(prompt)
+    text = st.text_area("Resposta (≥200 palavras)", height=250)
     if st.button("Enviar (Avançado)"):
-        pct=auto_score_parecer(text)
-        handle_result(tema_key,"Avançado",pct)
+        pct = score_text(text, 200)
+        handle_result(tema_key, "Avançado", pct)
 
-# ---------- result + cert ----------
+# -------------- painel --------------
 
-def handle_result(tema_key:str,nivel:str,pct:float):
-    key=(tema_key,nivel)
-    st.session_state["scores"][key]=pct
-    if pct>=THRESHOLD:
-        st.session_state["certs"][key]=True
-        st.success(f"Aprovado com {pct*100:.0f}%!")
-        pdf=make_pdf(st.session_state["email"],THEMES[tema_key]['title'],nivel,pct)
-        st.download_button("📄 Baixar Certificado",pdf,file_name=f"cert_{tema_key}_{nivel}.pdf")
-    else:
-        st.warning(f"{pct*100:.0f}% – necessário 70%")
-
-# ---------- dashboard ----------
-
-def panel():
-    st.title("📊 Painel")
-    for tema_key,tema in THEMES.items():
-        st.subheader(tema['title'])
-        for nivel in ("Iniciante","Intermediário","Avançado"):
-            key=(tema_key,nivel)
-            pct=st.session_state["scores"].get(key,0)*100
-            label="✅" if st.session_state["certs"].get(key,False) else f"{pct:.0f}%"
+def painel():
+    st.title("Painel de Desempenho")
+    for tkey, tval in THEMES.items():
+        st.subheader(tval["title"])
+        for nivel in ("Iniciante", "Intermediário", "Avançado"):
+            k = (tkey, nivel)
+            pct = st.session_state["scores"].get(k, 0) * 100
+            label = "✅" if st.session_state["certs"].get(k) else f"{pct:.0f}%"
             st.write(f"{nivel}: {label}")
 
-# ---------- main ----------
+# -------------- main --------------
 
 def main():
-    st.set_page_config(page_title="HABILITA – ENAC",layout="centered")
+    st.set_page_config(page_title="HABILITA – ENAC (teste)")
     init_state()
     if not st.session_state["auth"]:
         login(); return
 
-    choice=st.sidebar.radio("Menu",("Painel","Nova Avaliação","Sair"))
-    if choice=="Painel":
-        panel()
-    elif choice=="Nova Avaliação":
-        tema_key=st.selectbox("Tema",list(THEMES.keys()),format_func=lambda k:THEMES[k]['title'])
-        nivel=st.radio("Escolha o nível",("Iniciante","Intermediário","Avançado"))
-        if nivel=="Iniciante":
+    choice = st.sidebar.radio("Menu", ("Painel", "Nova Avaliação", "Sair"))
+    if choice == "Painel":
+        painel()
+    elif choice == "Nova Avaliação":
+        tema_key = st.selectbox("Tema", THEMES.keys(), format_func=lambda k: THEMES[k]['title'])
+        nivel = st.radio("Nível", ("Iniciante", "Intermediário", "Avançado"))
+        if nivel == "Iniciante":
             run_iniciante(tema_key)
-        elif nivel=="Intermediário":
-            run_discursiva(tema_key)
+        elif nivel == "Intermediário":
+            run_intermediario(tema_key)
         else:
-            run_parecer(tema_key)
+            run_avancado(tema_key)
     else:
         st.session_state.clear(); st.experimental_rerun()
 
-if __name__=="__main__":
+if __name__ == "__main__":
     main()
